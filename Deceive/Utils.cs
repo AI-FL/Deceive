@@ -1,16 +1,15 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
-using System.Net.Http.Headers;
+using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace Deceive;
@@ -28,62 +27,6 @@ internal static class Utils
         }
     }
 
-    /**
-     * Asynchronously checks if the current version of Deceive is the latest version.
-     * If not, and the user has not dismissed the message before, an alert is shown.
-     */
-    public static async Task CheckForUpdatesAsync()
-    {
-        try
-        {
-            var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Deceive", DeceiveVersion));
-
-            var response =
-                await httpClient.GetAsync("https://api.github.com/repos/molenzwiebel/Deceive/releases/latest");
-            var content = await response.Content.ReadAsStringAsync();
-            var release = JsonSerializer.Deserialize<JsonNode>(content);
-            var latestVersion = release?["tag_name"]?.ToString();
-
-            // If failed to fetch or already latest or newer, return.
-            if (latestVersion is null)
-                return;
-            var githubVersion = new Version(latestVersion.Replace("v", ""));
-            var assemblyVersion = new Version(DeceiveVersion.Replace("v", ""));
-            // Earlier = -1, Same = 0, Later = 1
-            if (assemblyVersion.CompareTo(githubVersion) != -1)
-                return;
-
-            // Check if we have shown this before.
-            var latestShownVersion = Persistence.GetPromptedUpdateVersion();
-
-            // If we have, return.
-            if (!string.IsNullOrEmpty(latestShownVersion) && latestShownVersion == latestVersion)
-                return;
-
-            // Show a message and record the latest shown.
-            Persistence.SetPromptedUpdateVersion(latestVersion);
-
-            var result = MessageBox.Show(
-                $"There is a new version of Deceive available: {latestVersion}. You are currently using Deceive {DeceiveVersion}. " +
-                "Deceive updates usually fix critical bugs or adapt to changes by Riot, so it is recommended that you install the latest version.\n\n" +
-                "Press OK to visit the download page, or press Cancel to continue. Don't worry, we won't bother you with this message again if you press cancel.",
-                StartupHandler.DeceiveTitle,
-                MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Information,
-                MessageBoxDefaultButton.Button1
-            );
-
-            if (result is DialogResult.OK)
-                // Open the url in the browser.
-                Process.Start(release?["html_url"]?.ToString()!);
-        }
-        catch
-        {
-            // Ignored.
-        }
-    }
-
     private static IEnumerable<Process> GetProcesses()
     {
         var riotCandidates = Process.GetProcessesByName(Process.GetCurrentProcess().ProcessName)
@@ -95,13 +38,10 @@ internal static class Utils
         return riotCandidates;
     }
 
-    // Return the currently running Riot Client process, or null if none are running.
     public static Process? GetRiotClientProcess() => Process.GetProcessesByName("RiotClientServices").FirstOrDefault();
 
-    // Checks if there is a running LCU/LoR/VALORANT/RC or Deceive instance.
     public static bool IsClientRunning() => GetProcesses().Any();
 
-    // Kills the running LCU/LoR/VALORANT/RC or Deceive instance, if applicable.
     public static void KillProcesses()
     {
         try
@@ -117,11 +57,9 @@ internal static class Utils
         }
         catch (Win32Exception ex)
         {
-            // thank you C# and your horrible win32 ecosystem integration, I have no clue if this is correct
             if (ex.NativeErrorCode == -2147467259 || ex.ErrorCode == -2147467259 || ex.ErrorCode == 5 ||
                 ex.NativeErrorCode == 5)
             {
-                // ERROR_ACCESS_DENIED
                 MessageBox.Show(
                     "Deceive could not stop existing Riot processes because it does not have the right permissions. Please relaunch this application as an administrator and try again.",
                     StartupHandler.DeceiveTitle,
@@ -136,11 +74,8 @@ internal static class Utils
         }
     }
 
-    // Checks for any installed Riot Client configuration,
-    // and returns the path of the client if it does. Else, returns null.
     public static string? GetRiotClientPath()
     {
-        // Find the RiotClientInstalls file.
         var installPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "Riot Games/RiotClientInstalls.json");
         if (!File.Exists(installPath))
@@ -148,9 +83,6 @@ internal static class Utils
 
         try
         {
-            // occasionally this deserialization may error, because the RC occasionally corrupts its own
-            // configuration file (wtf riot?). we will return null in that case, which will cause a prompt
-            // telling the user to launch a game normally once
             var data = JsonSerializer.Deserialize<JsonNode>(File.ReadAllText(installPath));
             var rcPaths = new List<string?>
                 { data?["rc_default"]?.ToString(), data?["rc_live"]?.ToString(), data?["rc_beta"]?.ToString() };
@@ -163,43 +95,84 @@ internal static class Utils
         }
     }
 
-    // Returns a certificate for deceive-localhost.molenzwiebel.xyz, either from cache or by downloading
-    // the current one from the server. The returned certificate will be valid for at least 20 days.
-    public static async Task<X509Certificate2?> GetProxyCertificateAsync()
+    // Generates or loads a self-signed TLS certificate for the local XMPP proxy.
+    // On first run (or after expiry), generates a new cert, installs it into
+    // CurrentUser\Root (Windows shows a one-time trust dialog), and caches it
+    // at %AppData%\Deceive\localhostCert.pfx. No external network calls.
+    public static X509Certificate2? GetOrCreateProxyCertificate()
     {
-        var cachedCert = Persistence.GetCachedCertificate();
-        if (cachedCert is not null && cachedCert.NotAfter > DateTime.Now.AddDays(20))
+        var cached = Persistence.GetCachedCertificate();
+        if (cached is not null && cached.NotAfter > DateTime.Now.AddDays(30))
         {
-            Trace.WriteLine($"Cached certificate is valid until {cachedCert.NotAfter}, using cached certificate.");
-            return cachedCert;
+            Trace.WriteLine($"Using cached certificate valid until {cached.NotAfter}.");
+            return cached;
         }
 
         try
         {
-            Trace.WriteLine("Cached certificate is missing or expiring soon, downloading new certificate.");
-            var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Deceive", DeceiveVersion));
+            Trace.WriteLine("Generating self-signed proxy certificate.");
 
-            var response = await httpClient.GetAsync("https://mln.cx/deceive/localhost.pfx");
-            response.EnsureSuccessStatusCode();
-            var certBytes = await response.Content.ReadAsByteArrayAsync();
-            var cert = new X509Certificate2(certBytes);
-            Persistence.SetCachedCertificate(certBytes);
+            using var rsa = RSA.Create(2048);
+            var req = new CertificateRequest(
+                $"CN={ConfigProxy.LocalhostDomain}",
+                rsa,
+                HashAlgorithmName.SHA256,
+                RSASignaturePadding.Pkcs1);
+
+            req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+            req.CertificateExtensions.Add(new X509KeyUsageExtension(
+                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
+            req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
+
+            var san = new SubjectAlternativeNameBuilder();
+            san.AddDnsName(ConfigProxy.LocalhostDomain);
+            san.AddIpAddress(IPAddress.Loopback);
+            req.CertificateExtensions.Add(san.Build());
+
+            var rawCert = req.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddDays(-1),
+                DateTimeOffset.UtcNow.AddYears(2));
+
+            var pfxBytes = rawCert.Export(X509ContentType.Pfx);
+            rawCert.Dispose();
+
+            var cert = new X509Certificate2(pfxBytes, (string?)null, X509KeyStorageFlags.EphemeralKeySet);
+            EnsureCertTrusted(cert);
+            Persistence.SetCachedCertificate(pfxBytes);
+
+            Trace.WriteLine($"Certificate generated, valid until {cert.NotAfter}.");
             return cert;
         }
         catch (Exception ex)
         {
-            // something went wrong, let's just return null and inform the user
-            Trace.WriteLine($"Failed to download certificate: {ex}");
+            Trace.WriteLine($"Failed to generate certificate: {ex}");
             return null;
         }
+    }
+
+    private static void EnsureCertTrusted(X509Certificate2 cert)
+    {
+        var publicOnly = new X509Certificate2(cert.RawData);
+        using var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser);
+        store.Open(OpenFlags.ReadWrite);
+
+        var existing = store.Certificates.Find(X509FindType.FindByThumbprint, cert.Thumbprint, false);
+        if (existing.Count > 0)
+        {
+            Trace.WriteLine("Certificate already present in CurrentUser\\Root.");
+            return;
+        }
+
+        store.Add(publicOnly);
+        Trace.WriteLine("Certificate installed to CurrentUser\\Root.");
     }
 
     private static bool DeceiveLocalhostResolves()
     {
         try
         {
-            var addresses = System.Net.Dns.GetHostAddresses(ConfigProxy.LocalhostDomain);
+            var addresses = Dns.GetHostAddresses(ConfigProxy.LocalhostDomain);
             if (addresses.Any(addr => addr.ToString() == "127.0.0.1"))
                 return true;
         }
@@ -210,25 +183,22 @@ internal static class Utils
         return false;
     }
 
-    // Check if deceive-localhost.molenzwiebel.xyz is resolving to 127.0.0.1, and offer
-    // the user to relaunch to install the necessary hosts file entry if not.
     public static void EnsureLocalhostResolution()
     {
         if (DeceiveLocalhostResolves())
             return;
 
-        var result = MessageBox.Show(
-            "Your machine is failing to resolve some required domains. You will need to switch DNS servers or add an entry to your hosts file. Please see the Deceive FAQ for more information. Deceive will not work until this issue is resolved. Would you like to open the FAQ now?",
+        MessageBox.Show(
+            $"DNS resolution failed for {ConfigProxy.LocalhostDomain}.\n\n" +
+            "Add the following line to C:\\Windows\\System32\\drivers\\etc\\hosts (requires Administrator):\n" +
+            $"    127.0.0.1 {ConfigProxy.LocalhostDomain}\n\n" +
+            "Alternatively, switch your DNS server to 1.1.1.1 (Cloudflare) or 8.8.8.8 (Google).\n\n" +
+            "Deceive cannot start until this is resolved.",
             StartupHandler.DeceiveTitle,
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question,
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error,
             MessageBoxDefaultButton.Button1
         );
-
-        if (result is DialogResult.Yes)
-        {
-            Process.Start("https://github.com/molenzwiebel/Deceive#FAQ");
-        }
 
         Environment.Exit(0);
     }

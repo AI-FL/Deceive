@@ -172,11 +172,8 @@ internal class ConfigProxy
         {
             Trace.WriteLine(ex);
 
-            // Show a message instead of failing silently.
             MessageBox.Show(
-                "Deceive was unable to rewrite a League of Legends configuration file. This normally happens because Riot changed something on their end. " +
-                "Please check if there's a new version of Deceive available, or contact the creator through GitHub (https://github.com/molenzwiebel/Deceive) or Discord if there's not.\n\n" +
-                ex,
+                "Deceive failed to rewrite the Riot clientconfig response. Riot may have changed the config schema.\n\n" + ex,
                 StartupHandler.DeceiveTitle,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error,

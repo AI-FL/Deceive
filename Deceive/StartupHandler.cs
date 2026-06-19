@@ -39,8 +39,7 @@ internal static class StartupHandler
             Trace.WriteLine(ex);
             // Show some kind of message so that Deceive doesn't just disappear.
             MessageBox.Show(
-                "Deceive encountered an error and couldn't properly initialize itself. " +
-                "Please contact the creator through GitHub (https://github.com/molenzwiebel/Deceive) or Discord.\n\n" + ex,
+                "Deceive encountered an unhandled error during initialization. Check %AppData%\\Deceive\\debug.log for details.\n\n" + ex,
                 DeceiveTitle,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error,
@@ -83,11 +82,7 @@ internal static class StartupHandler
             // ignored; just don't save logs if file is already being accessed
         }
 
-        // if we can't resolve deceive-localhost.molenzwiebel.xyz to 127.0.0.1, boom
         Utils.EnsureLocalhostResolution();
-
-        // Step 0: Check for updates in the background.
-        _ = Utils.CheckForUpdatesAsync();
 
         // Step 1: Open a port for our chat proxy, so we can patch chat port into clientconfig.
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -102,8 +97,7 @@ internal static class StartupHandler
         if (riotClientPath is null)
         {
             MessageBox.Show(
-                "Deceive was unable to find the path to the Riot Client. Usually this can be resolved by launching any Riot Games game once, then launching Deceive again. " +
-                "If this does not resolve the issue, please file a bug report through GitHub (https://github.com/molenzwiebel/Deceive) or Discord.",
+                "Deceive was unable to find the Riot Client path. Launch any Riot Games title once to populate %ProgramData%\\Riot Games\\RiotClientInstalls.json, then restart Deceive.",
                 DeceiveTitle,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error,
@@ -141,14 +135,14 @@ internal static class StartupHandler
         // Step 3: Start proxy web server for clientconfig
         var proxyServer = new ConfigProxy(port);
         
-        // Step 4: fetch certificate for MITM
-        var serverCertificate = await Utils.GetProxyCertificateAsync();
+        // Step 4: Generate or load self-signed certificate for XMPP MITM proxy.
+        var serverCertificate = Utils.GetOrCreateProxyCertificate();
         if (serverCertificate is null)
         {
             MessageBox.Show(
-                "Deceive was unable to obtain a necessary security certificate for intercepting and modifying the chat connection. This normally happens when there's " +
-                "a problem with the server that provides the certificate, but it can also be caused by network issues on your end. Please check if there's a new version" +
-                " of Deceive available, check your network connection, or contact the creator through GitHub (https://github.com/molenzwiebel/Deceive) or Discord.",
+                "Deceive failed to generate or load the local TLS certificate for the chat proxy.\n\n" +
+                "Delete %AppData%\\Deceive\\localhostCert.pfx and restart to force regeneration.\n" +
+                "Check %AppData%\\Deceive\\debug.log for the specific error.",
                 DeceiveTitle,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error,

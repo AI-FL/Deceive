@@ -8,8 +8,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Xml;
-using System.Xml.Linq;
 using Deceive.Properties;
 
 namespace Deceive;
@@ -77,9 +75,7 @@ internal class MainController : ApplicationContext
                     {
                         Trace.WriteLine(e);
                         var result = MessageBox.Show(
-                            "Unable to connect to the chat server. Please check your internet connection. " +
-                            "If this issue persists and you can connect to chat normally without Deceive, " +
-                            "please file a bug report through GitHub (https://github.com/molenzwiebel/Deceive) or Discord.",
+                            "Unable to connect to the Riot chat server. Check your internet connection and verify DNS resolves correctly.",
                             StartupHandler.DeceiveTitle,
                             MessageBoxButtons.RetryCancel,
                             MessageBoxIcon.Error,

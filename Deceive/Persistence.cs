@@ -8,7 +8,6 @@ internal static class Persistence
 {
     internal static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Deceive");
 
-    private static readonly string UpdateVersionPath = Path.Combine(DataDir, "updateVersionPrompted");
     private static readonly string DefaultLaunchGamePath = Path.Combine(DataDir, "launchGame");
     private static readonly string CachedCertPath = Path.Combine(DataDir, "localhostCert.pfx");
     private static readonly string StartupStatusPath = Path.Combine(DataDir, "startupStatus");
@@ -18,11 +17,6 @@ internal static class Persistence
         if (!Directory.Exists(DataDir))
             Directory.CreateDirectory(DataDir);
     }
-
-    // Prompted update version.
-    internal static string GetPromptedUpdateVersion() => File.Exists(UpdateVersionPath) ? File.ReadAllText(UpdateVersionPath) : string.Empty;
-
-    internal static void SetPromptedUpdateVersion(string version) => File.WriteAllText(UpdateVersionPath, version);
 
     // Configured launch option.
     internal static LaunchGame GetDefaultLaunchGame()
@@ -39,7 +33,6 @@ internal static class Persistence
 
     internal static void SetDefaultLaunchGame(LaunchGame game) => File.WriteAllText(DefaultLaunchGamePath, game.ToString());
     
-    // Cached deceive-localhost.molenzwiebel.xyz certificate
     internal static X509Certificate2? GetCachedCertificate()
     {
         if (!File.Exists(CachedCertPath))
@@ -48,11 +41,10 @@ internal static class Persistence
         try
         {
             var contents = File.ReadAllBytes(CachedCertPath);
-            return new X509Certificate2(contents);
+            return new X509Certificate2(contents, (string?)null, X509KeyStorageFlags.EphemeralKeySet);
         }
         catch
         {
-            // If we fail to load the cert for any reason, just return null and grab a new one.
             return null;
         }
     }
